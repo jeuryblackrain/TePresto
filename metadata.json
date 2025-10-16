@@ -1,0 +1,5 @@
+{
+  "name": "Loan Management System - Tenant",
+  "description": "A comprehensive web application for managing loans, payments, and clients. It features role-based access for admins and employees, automatic loan schedule generation, payment tracking, and advanced reporting capabilities, all presented in a modern and intuitive user interface.",
+  "requestFramePermissions": []
+}

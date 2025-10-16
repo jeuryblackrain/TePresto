@@ -1,0 +1,27 @@
+{
+  "name": "loan-management-system---tenant",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "recharts": "^3.2.1",
+    "react-dom": "^19.1.1",
+    "react": "^19.1.1",
+    "react-router-dom": "^7.9.2",
+    "lucide-react": "^0.544.0",
+    "@google/genai": "^1.21.0",
+    "@supabase/supabase-js": "2.44.4",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}
