@@ -31,8 +31,8 @@ const NewTenantForm: React.FC<NewTenantFormProps> = ({ onSave, onClose, isSaving
         
         if (!adminPassword) {
             newErrors.adminPassword = 'La contraseña es obligatoria.';
-        } else if (adminPassword.length < 6) {
-            newErrors.adminPassword = 'La contraseña debe tener al menos 6 caracteres.';
+        } else if (adminPassword.length < 8) {
+            newErrors.adminPassword = 'La contraseña debe tener al menos 8 caracteres.';
         }
 
         setErrors(newErrors);
@@ -83,8 +83,21 @@ const NewTenantForm: React.FC<NewTenantFormProps> = ({ onSave, onClose, isSaving
                 </div>
                 <div>
                     <label htmlFor="adminPassword" className={labelClasses}>Contraseña del Administrador</label>
-                    <input type="password" id="adminPassword" name="adminPassword" value={formData.adminPassword} onChange={handleChange} required className={getInputClass('adminPassword')} />
-                    {errors.adminPassword && <p className={errorTextClasses}>{errors.adminPassword}</p>}
+                    <input 
+                        type="password" 
+                        id="adminPassword" 
+                        name="adminPassword" 
+                        value={formData.adminPassword} 
+                        onChange={handleChange} 
+                        required 
+                        minLength={8}
+                        className={getInputClass('adminPassword')} 
+                    />
+                    {errors.adminPassword ? (
+                        <p className={errorTextClasses}>{errors.adminPassword}</p>
+                    ) : (
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Mínimo 8 caracteres.</p>
+                    )}
                 </div>
             </fieldset>
 
