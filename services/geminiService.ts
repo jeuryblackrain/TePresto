@@ -1,16 +1,26 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
-import { Loan, Client, Profile, Payment, LoanSchedule, LoanStatus, ScheduleStatus } from '../types.ts';
+import { Loan, Client, Profile, Payment, LoanSchedule, ScheduleStatus } from '../types.ts';
 
-// The API key is sourced from the environment variable `process.env.API_KEY`.
-// This variable is securely managed and made available in the execution environment.
-const apiKey = process.env.API_KEY;
+// Lazy initialization holder
+let aiInstance: GoogleGenAI | null = null;
 
-let ai: GoogleGenAI | null = null;
-if (apiKey) {
-    ai = new GoogleGenAI({ apiKey });
-} else {
-    console.warn("Gemini API key (API_KEY) not found. AI features will be disabled.");
-}
+// Function to get or create the AI instance securely
+const getAiClient = () => {
+    if (!aiInstance) {
+        // Fallback to import.meta.env for Vite if process.env.API_KEY is empty (though vite.config.js should map it)
+        const apiKey = process.env.API_KEY || (import.meta as any).env.VITE_GEMINI_API_KEY;
+        
+        if (!apiKey) {
+            console.warn("Gemini API Key is missing. AI features will not work.");
+            throw new Error("API Key no configurada.");
+        }
+        
+        // Initialize strictly using the guidelines
+        aiInstance = new GoogleGenAI({ apiKey: apiKey });
+    }
+    return aiInstance;
+};
 
 interface ReportData {
     loans: Loan[];
@@ -34,11 +44,9 @@ interface RiskAnalysisResult {
  * @returns A string containing the generated summary.
  */
 export const generateReportSummary = async (data: ReportData): Promise<string> => {
-    if (!ai) {
-        return "Gemini AI functionality is disabled. API key not configured.";
-    }
-    
     try {
+        const ai = getAiClient();
+        
         const totalLoanAmount = data.loans.reduce((sum, loan) => sum + Number(loan.amount), 0);
         const totalPaymentsAmount = data.payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
         
@@ -64,7 +72,7 @@ export const generateReportSummary = async (data: ReportData): Promise<string> =
             contents: prompt,
         });
         
-        return response.text;
+        return response.text || "No se pudo generar el texto.";
 
     } catch (error) {
         console.error("Error generating report summary with Gemini:", error);
@@ -83,9 +91,6 @@ export const generateReportSummary = async (data: ReportData): Promise<string> =
  * @returns A structured risk analysis object.
  */
 export const generateClientRiskAnalysis = async (client: Client, loans: LoanWithSchedules[]): Promise<RiskAnalysisResult> => {
-     if (!ai) {
-        throw new Error("Gemini AI functionality is disabled. API key not configured.");
-    }
     if (loans.length === 0) {
         return {
             risk_level: 'Bajo',
@@ -94,6 +99,8 @@ export const generateClientRiskAnalysis = async (client: Client, loans: LoanWith
     }
 
     try {
+        const ai = getAiClient();
+
         const historySummary = loans.map(loan => {
             const paidInstallments = loan.loan_schedules.filter(s => s.status === ScheduleStatus.PAGADO);
             const overdueInstallments = loan.loan_schedules.filter(s => s.status === ScheduleStatus.VENCIDO);
@@ -146,7 +153,9 @@ export const generateClientRiskAnalysis = async (client: Client, loans: LoanWith
             }
         });
         
-        const jsonText = response.text.trim();
+        const jsonText = response.text?.trim();
+        if (!jsonText) throw new Error("Empty response from AI");
+        
         return JSON.parse(jsonText) as RiskAnalysisResult;
 
     } catch (error) {

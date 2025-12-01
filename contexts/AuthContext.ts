@@ -2,7 +2,7 @@ import { createContext } from 'react';
 // FIX: Define Supabase auth types locally to support older versions of @supabase/supabase-js
 // where these are not exported from the main package.
 // import { Session, User, AuthError } from '@supabase/supabase-js';
-import { Profile } from '../types.ts';
+import { Profile, Tenant } from '../types.ts';
 
 export interface User {
     id: string;
@@ -28,6 +28,9 @@ interface AuthContextType {
     session: Session | null;
     user: User | null;
     profile: Profile | null;
+    tenant: Tenant | null;
+    isReadOnly: boolean;
+    loading: boolean;
     signOut: () => Promise<{ error: AuthError | null }>;
 }
 

@@ -1,6 +1,7 @@
+
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, HandCoins, FileText, UserCog, Building, Users, Map, X } from 'lucide-react';
+import { LayoutDashboard, HandCoins, FileText, UserCog, Building, Users, Map, X, Wallet } from 'lucide-react';
 import useAuth from '../../hooks/useAuth.ts';
 import { Role } from '../../types.ts';
 
@@ -16,6 +17,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
         { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
         { to: '/loans', icon: HandCoins, label: 'Préstamos' },
         { to: '/clients', icon: Users, label: 'Clientes' },
+        { to: '/cash', icon: Wallet, label: 'Caja' },
         { to: '/routes', icon: Map, label: 'Rutas' },
         { to: '/reports', icon: FileText, label: 'Reportes' },
     ];

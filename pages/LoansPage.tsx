@@ -1,7 +1,5 @@
 
-
-
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient.ts';
 import { Loan, LoanStatus, Role } from '../types.ts';
@@ -15,31 +13,34 @@ import { useToast } from '../hooks/useToast.ts';
 import useAuth from '../hooks/useAuth.ts';
 import { generateLoanSchedule } from '../utils/LoanScheduleGenerator.ts';
 import StatusBadge from '../components/ui/StatusBadge.tsx';
+import Pagination from '../components/ui/Pagination.tsx';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 type LoanWithClient = Loan & {
     clients: { name: string } | null;
 };
 
+const ITEMS_PER_PAGE = 20;
+
 const LoansPage: React.FC = () => {
-    const { profile } = useAuth();
-    const [loans, setLoans] = useState<LoanWithClient[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [isSaving, setIsSaving] = useState(false);
+    const { profile, isReadOnly } = useAuth();
     const { addToast } = useToast();
+    const queryClient = useQueryClient();
+
+    const [isModalOpen, setIsModalOpen] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState<LoanStatus | 'all'>('all');
+    const [page, setPage] = useState(1);
 
+    // Fetch Loans with useQuery
+    const { data, isLoading, error } = useQuery({
+        queryKey: ['loans', profile?.tenant_id, profile?.id, profile?.role, statusFilter, page, searchTerm],
+        queryFn: async () => {
+            if (!profile) return { data: [], count: 0 };
 
-    const fetchLoans = useCallback(async () => {
-        if (!profile) return;
-        setLoading(true);
-        setError(null);
-        try {
             let query = supabase
                 .from('loans')
-                .select('*, clients!inner(name)')
+                .select('*, clients!inner(name)', { count: 'exact' })
                 .eq('tenant_id', profile.tenant_id)
                 .order('issue_date', { ascending: false });
             
@@ -54,35 +55,27 @@ const LoansPage: React.FC = () => {
             if (searchTerm) {
                  query = query.ilike('clients.name', `%${searchTerm}%`);
             }
+            
+            const from = (page - 1) * ITEMS_PER_PAGE;
+            const to = from + ITEMS_PER_PAGE - 1;
+            query = query.range(from, to);
 
-            const { data, error } = await query;
-
+            const { data, error, count } = await query;
             if (error) throw error;
-            setLoans(data as LoanWithClient[]);
-        } catch (err: any) {
-            setError(err.message || 'Failed to fetch loans.');
-            console.error(err);
-        } finally {
-            setLoading(false);
-        }
-    }, [profile, statusFilter, searchTerm]);
+            
+            return { data: data as LoanWithClient[], count: count || 0 };
+        },
+        enabled: !!profile,
+        placeholderData: (previousData) => previousData, // Keep showing previous data while fetching new
+    });
 
-    useEffect(() => {
-        const debounceTimer = setTimeout(() => {
-            if (profile) {
-                fetchLoans();
-            }
-        }, 300); // Debounce search input
+    const loans = data?.data || [];
+    const totalCount = data?.count || 0;
 
-        return () => clearTimeout(debounceTimer);
-    }, [profile, fetchLoans]);
-
-    const handleSaveLoan = async (loanData: Omit<Loan, 'id' | 'status' | 'tenant_id'>) => {
-        if (!profile) return;
-        setIsSaving(true);
-        try {
-            // 1. Insert the new loan. The tenant_id is now set by the database default.
-            const loanPayload = { 
+    // Mutation for creating a loan
+    const createLoanMutation = useMutation({
+        mutationFn: async (loanData: Omit<Loan, 'id' | 'status' | 'tenant_id'>) => {
+             const loanPayload = { 
                 ...loanData, 
                 status: LoanStatus.ACTIVO
             };
@@ -96,35 +89,35 @@ const LoansPage: React.FC = () => {
             if (loanError) throw loanError;
             if (!insertedLoan) throw new Error("Failed to get inserted loan data.");
             
-            // 2. Generate the schedule using the newly inserted loan data
             const schedule = generateLoanSchedule(insertedLoan);
             
-            // 3. Insert the generated schedule. tenant_id is also handled by DB default.
             const { error: scheduleError } = await supabase
                 .from('loan_schedules')
                 .insert(schedule);
 
             if (scheduleError) {
-                // Attempt to roll back loan insertion if schedule fails
+                // Rollback
                 await supabase.from('loans').delete().eq('id', insertedLoan.id);
                 throw scheduleError;
             }
-
+            return insertedLoan;
+        },
+        onSuccess: () => {
             addToast('Préstamo creado exitosamente', 'success');
             setIsModalOpen(false);
-            fetchLoans(); // Refresh the list
-        } catch (err: any) {
+            queryClient.invalidateQueries({ queryKey: ['loans'] }); // Refresh the list
+            queryClient.invalidateQueries({ queryKey: ['dashboardStats'] }); // Refresh dashboard stats too
+        },
+        onError: (err: any) => {
             console.error('Error saving loan:', err);
             addToast(`Error al crear préstamo: ${err.message}`, 'error');
-        } finally {
-            setIsSaving(false);
         }
+    });
+
+    const handleSaveLoan = (loanData: Omit<Loan, 'id' | 'status' | 'tenant_id'>) => {
+        createLoanMutation.mutate(loanData);
     };
 
-    const handleCloseModal = useCallback(() => {
-        setIsModalOpen(false);
-    }, []);
-    
     const filterButtons = useMemo(() => [
         { label: 'Todos', value: 'all' },
         { label: 'Activos', value: LoanStatus.ACTIVO },
@@ -132,11 +125,21 @@ const LoansPage: React.FC = () => {
         { label: 'Pagados', value: LoanStatus.PAGADO }
     ], []);
 
+    // Reset page on filter change
+    React.useEffect(() => {
+        setPage(1);
+    }, [statusFilter, searchTerm]);
+
     return (
         <>
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                 <h1 className="text-3xl font-bold text-gray-800 dark:text-white">Préstamos</h1>
-                <Button onClick={() => setIsModalOpen(true)} leftIcon={PlusCircle}>
+                <Button 
+                    onClick={() => setIsModalOpen(true)} 
+                    leftIcon={PlusCircle}
+                    disabled={isReadOnly}
+                    title={isReadOnly ? "Modo solo lectura activo" : "Crear nuevo préstamo"}
+                >
                     Nuevo Préstamo
                 </Button>
             </div>
@@ -150,6 +153,7 @@ const LoansPage: React.FC = () => {
                                 placeholder="Buscar por nombre de cliente..."
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
+                                maxLength={100}
                                 className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
                             />
                         </div>
@@ -167,9 +171,9 @@ const LoansPage: React.FC = () => {
                     </div>
                 </div>
 
-                {loading && <p className="p-4 text-center">Cargando préstamos...</p>}
-                {error && <p className="p-4 text-center text-red-500">{error}</p>}
-                {!loading && !error && (
+                {isLoading && <p className="p-4 text-center dark:text-gray-300">Cargando préstamos...</p>}
+                {error && <p className="p-4 text-center text-red-500">Error: {(error as Error).message}</p>}
+                {!isLoading && !error && (
                     <div className="overflow-x-auto mt-4">
                         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                             <thead className="bg-gray-50 dark:bg-gray-800">
@@ -183,7 +187,7 @@ const LoansPage: React.FC = () => {
                             </thead>
                             <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
                                 {loans.length === 0 ? (
-                                    <tr><td colSpan={5} className="text-center py-4">No hay préstamos para mostrar.</td></tr>
+                                    <tr><td colSpan={5} className="text-center py-4 dark:text-gray-300">No hay préstamos para mostrar.</td></tr>
                                 ) : (
                                     loans.map(loan => (
                                         <tr key={loan.id}>
@@ -203,11 +207,21 @@ const LoansPage: React.FC = () => {
                                 )}
                             </tbody>
                         </table>
+                        <Pagination 
+                            currentPage={page} 
+                            totalCount={totalCount} 
+                            pageSize={ITEMS_PER_PAGE} 
+                            onPageChange={setPage} 
+                        />
                     </div>
                 )}
             </Card>
-            <Modal isOpen={isModalOpen} onClose={handleCloseModal} title="Crear Nuevo Préstamo">
-                <NewLoanForm onSave={handleSaveLoan} onClose={handleCloseModal} isSaving={isSaving} />
+            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Crear Nuevo Préstamo">
+                <NewLoanForm 
+                    onSave={handleSaveLoan} 
+                    onClose={() => setIsModalOpen(false)} 
+                    isSaving={createLoanMutation.isPending} 
+                />
             </Modal>
         </>
     );

@@ -1,14 +1,16 @@
+
 import React, { useEffect, useState, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient.ts';
 import { Loan, Client, LoanSchedule, Payment, Profile, ScheduleStatus, Role, LoanStatus } from '../types.ts';
 import Card from '../components/ui/Card.tsx';
 import Button from '../components/ui/Button.tsx';
 import { formatCurrency, formatDate } from '../utils/formatters.ts';
-import { User, ArrowLeft, DollarSign, FileText, Map, Edit, CircleDollarSign } from 'lucide-react';
+import { User, ArrowLeft, DollarSign, FileText, Map, Edit, CircleDollarSign, Repeat } from 'lucide-react';
 import Modal from '../components/ui/Modal.tsx';
 import RecordPaymentForm from '../components/forms/RecordPaymentForm.tsx';
 import EditLoanForm from '../components/forms/EditLoanForm.tsx';
+import RenovateLoanForm from '../components/forms/RenovateLoanForm.tsx';
 import { useToast } from '../hooks/useToast.ts';
 import useAuth from '../hooks/useAuth.ts';
 import PaymentReceipt from '../components/ui/PaymentReceipt.tsx';
@@ -25,7 +27,9 @@ type LoanDetails = Loan & {
 const LoanDetailPage: React.FC = () => {
     const { loanId } = useParams<{ loanId: string }>();
     const { addToast } = useToast();
-    const { profile } = useAuth();
+    const { profile, isReadOnly } = useAuth();
+    const navigate = useNavigate();
+    
     const [loan, setLoan] = useState<LoanDetails | null>(null);
     const [schedule, setSchedule] = useState<LoanSchedule[]>([]);
     const [payments, setPayments] = useState<Payment[]>([]);
@@ -37,6 +41,8 @@ const LoanDetailPage: React.FC = () => {
     const [editModalOpen, setEditModalOpen] = useState(false);
     const [receiptModalOpen, setReceiptModalOpen] = useState(false);
     const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
+    const [isRenovateModalOpen, setIsRenovateModalOpen] = useState(false);
+    
     const [selectedSchedule, setSelectedSchedule] = useState<LoanSchedule | null>(null);
     const [activePayment, setActivePayment] = useState<Payment | null>(null);
     const [receiptContext, setReceiptContext] = useState<any>({});
@@ -103,13 +109,12 @@ const LoanDetailPage: React.FC = () => {
     const handleClosePaymentModal = useCallback(() => setPaymentModalOpen(false), []);
     const handleCloseReceiptModal = useCallback(() => setReceiptModalOpen(false), []);
     const handleCloseEditModal = useCallback(() => setEditModalOpen(false), []);
+    const handleCloseRenovateModal = useCallback(() => setIsRenovateModalOpen(false), []);
 
     const handleRecordPayment = async (paymentData: Omit<Payment, 'id' | 'tenant_id'>) => {
         if (!selectedSchedule || !loan || !profile) return;
         try {
-            // The tenant_id is now set by the database default.
             const paymentPayload = { ...paymentData };
-            // 1. Insert the payment
             const { data: newPayment, error: paymentError } = await supabase
                 .from('payments')
                 .insert(paymentPayload)
@@ -118,7 +123,6 @@ const LoanDetailPage: React.FC = () => {
 
             if (paymentError) throw paymentError;
             
-            // 2. Update loan schedule
             const newAmountPaid = selectedSchedule.amount_paid + paymentData.amount;
             const newStatus = newAmountPaid >= selectedSchedule.amount_due ? ScheduleStatus.PAGADO : selectedSchedule.status;
             
@@ -137,7 +141,6 @@ const LoanDetailPage: React.FC = () => {
             setPaymentModalOpen(false);
             setActivePayment(newPayment);
 
-            // Calculate remaining balance for receipt
             const totalDue = schedule.reduce((sum, s) => sum + s.amount_due, 0);
             const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0) + newPayment.amount;
             
@@ -147,8 +150,8 @@ const LoanDetailPage: React.FC = () => {
                 installment_number: selectedSchedule.installment_number
             });
             
-            setReceiptModalOpen(true); // Open receipt modal
-            fetchData(); // Refresh all data
+            setReceiptModalOpen(true);
+            fetchData();
         } catch (err: any) {
             console.error("Error recording payment:", err);
             addToast(`Error al registrar pago: ${err.message}`, 'error');
@@ -157,7 +160,6 @@ const LoanDetailPage: React.FC = () => {
     
     const handleViewReceipt = (scheduleItem: LoanSchedule) => {
         if (!loan) return;
-        // Find the latest payment associated with this schedule installment
         const paymentForSchedule = payments
             .filter(p => p.schedule_id === scheduleItem.id)
             .sort((a, b) => new Date(b.payment_date).getTime() - new Date(a.payment_date).getTime())[0];
@@ -188,7 +190,6 @@ const LoanDetailPage: React.FC = () => {
     
         const financialFields: (keyof Loan)[] = ['amount', 'interest_rate', 'fixed_payment', 'frequency', 'payment_type', 'term', 'issue_date'];
         const financialsChanged = financialFields.some(field =>
-            // Compare as strings to handle different types (number, string, null, undefined)
             String(loan[field] ?? '') !== String(updatedFields[field] ?? '')
         );
     
@@ -233,6 +234,10 @@ const LoanDetailPage: React.FC = () => {
     const totalDue = schedule.reduce((sum, s) => sum + s.amount_due, 0);
     const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
     const remainingBalance = Math.max(0, totalDue - totalPaid);
+    
+    // Check for Renovation eligibility (3 or fewer unpaid installments)
+    const unpaidInstallmentsCount = schedule.filter(s => s.status !== ScheduleStatus.PAGADO).length;
+    const canRenovate = unpaidInstallmentsCount <= 3 && loan?.status !== LoanStatus.PAGADO;
 
     const handleConfirmSettleLoan = async () => {
         if (!loan || !profile) return;
@@ -261,7 +266,6 @@ const LoanDetailPage: React.FC = () => {
                 amount: finalRemainingBalance,
                 payment_date: today,
                 recorded_by: profile.id,
-                // tenant_id is now set by the database default.
             }).select().single();
 
             if (paymentError) throw paymentError;
@@ -272,17 +276,15 @@ const LoanDetailPage: React.FC = () => {
                 .map(s => ({
                     id: s.id,
                     loan_id: s.loan_id,
-                    // tenant_id removed, not needed for upsert if already set
                     installment_number: s.installment_number,
                     due_date: s.due_date,
                     amount_due: s.amount_due,
-                    amount_paid: s.amount_due, // Mark as fully paid
+                    amount_paid: s.amount_due, 
                     payment_date: today,
                     status: ScheduleStatus.PAGADO,
                 }));
     
             if (schedulesToUpdate.length > 0) {
-                // Supabase upsert doesn't require all columns if they are not changing
                 const { error: scheduleUpsertError } = await supabase
                     .from('loan_schedules')
                     .upsert(schedulesToUpdate.map(({loan_id, due_date, amount_due, ...rest}) => rest));
@@ -297,7 +299,6 @@ const LoanDetailPage: React.FC = () => {
     
             addToast('Préstamo saldado exitosamente.', 'success');
             
-            // Prepare and show the settlement receipt
             setActivePayment(settlementPayment);
             setReceiptContext({
                 employeeName: loan?.profiles?.name,
@@ -307,12 +308,97 @@ const LoanDetailPage: React.FC = () => {
             setReceiptModalOpen(true);
 
             setIsSettleModalOpen(false);
-            fetchData(); // Refresh data in the background
+            fetchData();
         } catch (err: any) {
             console.error("Error settling loan:", err);
             addToast(`Error al saldar el préstamo: ${err.message}`, 'error');
         } finally {
             setIsSettling(false);
+        }
+    };
+
+    const handleRenovateLoan = async (newLoanData: Omit<Loan, 'id' | 'status' | 'tenant_id'>) => {
+        if (!loan || !profile) return;
+        setIsSaving(true);
+        try {
+            const today = new Date().toISOString().split('T')[0];
+            const finalRemainingBalance = parseFloat(remainingBalance.toFixed(2));
+
+            // 1. If there's a balance, settle the old loan (internally)
+            if (finalRemainingBalance > 0) {
+                const firstUnpaidSchedule = schedule.find(s => s.status !== ScheduleStatus.PAGADO);
+                // Insert a settlement payment marked as renovation (optional: could add a note field if DB supported it)
+                const { error: paymentError } = await supabase.from('payments').insert({
+                    loan_id: loan.id,
+                    schedule_id: firstUnpaidSchedule?.id, // Link to a schedule or null if DB allows
+                    amount: finalRemainingBalance,
+                    payment_date: today,
+                    recorded_by: profile.id,
+                });
+                if (paymentError) throw paymentError;
+
+                // Update schedules
+                const schedulesToUpdate = schedule
+                    .filter(s => s.status !== ScheduleStatus.PAGADO)
+                    .map(s => ({
+                        id: s.id,
+                        loan_id: s.loan_id,
+                        installment_number: s.installment_number,
+                        due_date: s.due_date,
+                        amount_due: s.amount_due,
+                        amount_paid: s.amount_due, 
+                        payment_date: today,
+                        status: ScheduleStatus.PAGADO,
+                    }));
+                
+                if (schedulesToUpdate.length > 0) {
+                     const { error: scheduleUpsertError } = await supabase
+                        .from('loan_schedules')
+                        .upsert(schedulesToUpdate.map(({loan_id, due_date, amount_due, ...rest}) => rest));
+                    if (scheduleUpsertError) throw scheduleUpsertError;
+                }
+            }
+
+            // 2. Close the old loan
+            const { error: closeLoanError } = await supabase
+                .from('loans')
+                .update({ status: LoanStatus.PAGADO })
+                .eq('id', loan.id);
+            if (closeLoanError) throw closeLoanError;
+
+            // 3. Create the NEW loan
+            const loanPayload = { 
+                ...newLoanData, 
+                status: LoanStatus.ACTIVO
+            };
+            const { data: insertedLoan, error: createLoanError } = await supabase
+                .from('loans')
+                .insert(loanPayload)
+                .select()
+                .single<Loan>();
+            
+            if (createLoanError) throw createLoanError;
+            if (!insertedLoan) throw new Error("Failed to create new loan.");
+
+            // 4. Generate schedules for new loan
+            const newSchedule = generateLoanSchedule(insertedLoan);
+            const { error: createScheduleError } = await supabase
+                .from('loan_schedules')
+                .insert(newSchedule);
+            
+            if (createScheduleError) throw createScheduleError;
+
+            addToast('Préstamo renovado exitosamente.', 'success');
+            setIsRenovateModalOpen(false);
+            
+            // Redirect to the new loan detail page
+            navigate(`/loans/${insertedLoan.id}`);
+
+        } catch (err: any) {
+            console.error('Renovation error:', err);
+            addToast(`Error al renovar préstamo: ${err.message}`, 'error');
+        } finally {
+            setIsSaving(false);
         }
     };
 
@@ -324,29 +410,43 @@ const LoanDetailPage: React.FC = () => {
 
     return (
         <>
-            <div className="flex justify-between items-center mb-4">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
                 <Link to="/loans" className="flex items-center text-sm text-primary-600 dark:text-primary-400 hover:underline">
                     <ArrowLeft className="w-4 h-4 mr-1" />
                     Volver a Préstamos
                 </Link>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                    {/* Renovate Button */}
+                    {canRenovate && (
+                         <Button
+                            onClick={() => setIsRenovateModalOpen(true)}
+                            variant="primary" // Highlighting this action
+                            leftIcon={Repeat}
+                            className="bg-purple-600 hover:bg-purple-700"
+                            disabled={isReadOnly}
+                        >
+                            Renovar
+                        </Button>
+                    )}
+
                     {loan.status !== LoanStatus.PAGADO && (
                         <Button
                             onClick={() => setIsSettleModalOpen(true)}
                             variant="success"
                             leftIcon={CircleDollarSign}
-                            disabled={remainingBalance <= 0}
+                            disabled={remainingBalance <= 0 || isReadOnly}
                         >
-                            Saldar Préstamo
+                            Saldar
                         </Button>
                     )}
                     {profile?.role === Role.ADMIN && (
-                        <Button onClick={() => setEditModalOpen(true)} leftIcon={Edit} variant="secondary">
-                            Editar Préstamo
+                        <Button onClick={() => setEditModalOpen(true)} leftIcon={Edit} variant="secondary" disabled={isReadOnly}>
+                            Editar
                         </Button>
                     )}
                 </div>
             </div>
+            
             <Card title={`Detalles del Préstamo #${loan.id.split('-')[0]}`}>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <div>
@@ -388,6 +488,12 @@ const LoanDetailPage: React.FC = () => {
                         </p>
                     </div>
                 </div>
+                {/* Warning for Renovation Eligibility */}
+                {!canRenovate && loan.status === LoanStatus.ACTIVO && (
+                     <div className="mt-4 p-2 bg-yellow-50 dark:bg-yellow-900/20 text-xs text-yellow-800 dark:text-yellow-200 rounded">
+                        * La renovación solo está disponible cuando faltan 3 o menos cuotas por pagar.
+                    </div>
+                )}
             </Card>
 
             <Card title="Calendario de Pagos" className="mt-6">
@@ -415,7 +521,7 @@ const LoanDetailPage: React.FC = () => {
                                     <td className="px-4 py-4 whitespace-nowrap"><StatusBadge status={item.status} /></td>
                                     <td className="px-4 py-4 whitespace-nowrap">
                                         {item.status !== ScheduleStatus.PAGADO ? (
-                                            <Button size="sm" onClick={() => handleOpenPaymentModal(item)} leftIcon={DollarSign}>
+                                            <Button size="sm" onClick={() => handleOpenPaymentModal(item)} leftIcon={DollarSign} disabled={isReadOnly}>
                                                 Registrar Pago
                                             </Button>
                                         ) : (
@@ -442,15 +548,27 @@ const LoanDetailPage: React.FC = () => {
             )}
 
             {loan && (
-                 <Modal isOpen={editModalOpen} onClose={handleCloseEditModal} title="Editar Préstamo">
-                    <EditLoanForm 
-                        loan={loan}
-                        onClose={handleCloseEditModal} 
-                        onSave={handleUpdateLoan}
-                        isSaving={isSaving}
-                        hasPayments={payments.length > 0}
-                    />
-                </Modal>
+                <>
+                    <Modal isOpen={editModalOpen} onClose={handleCloseEditModal} title="Editar Préstamo">
+                        <EditLoanForm 
+                            loan={loan}
+                            onClose={handleCloseEditModal} 
+                            onSave={handleUpdateLoan}
+                            isSaving={isSaving}
+                            hasPayments={payments.length > 0}
+                        />
+                    </Modal>
+
+                    <Modal isOpen={isRenovateModalOpen} onClose={handleCloseRenovateModal} title="Renovar Préstamo">
+                        <RenovateLoanForm
+                            oldLoan={loan}
+                            balanceToPayOff={remainingBalance}
+                            onSave={handleRenovateLoan}
+                            onClose={handleCloseRenovateModal}
+                            isSaving={isSaving}
+                        />
+                    </Modal>
+                </>
             )}
 
             {activePayment && loan.clients && (

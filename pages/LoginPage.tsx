@@ -47,6 +47,7 @@ const LoginPage: React.FC = () => {
                             type="email"
                             autoComplete="email"
                             required
+                            maxLength={50}
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             className="w-full pl-10 pr-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-md placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
@@ -61,6 +62,7 @@ const LoginPage: React.FC = () => {
                             type="password"
                             autoComplete="current-password"
                             required
+                            maxLength={20}
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             className="w-full pl-10 pr-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-md placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"

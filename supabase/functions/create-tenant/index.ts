@@ -1,3 +1,4 @@
+
 // supabase/functions/create-tenant/index.ts
 // FIX: Add Deno namespace declaration to resolve "Cannot find name 'Deno'" error.
 declare const Deno: {
@@ -24,65 +25,88 @@ serve(async (req) => {
     const { companyName, adminName, adminEmail, adminPassword } = await req.json();
 
     if (!companyName || !adminName || !adminEmail || !adminPassword) {
-      throw new Error('Missing required fields for tenant creation.');
+      throw new Error('Faltan campos obligatorios para crear la empresa.');
     }
     
-    // Admin client to interact with database
-    const adminClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    );
+    // VALIDACIÓN CRÍTICA DE CONFIGURACIÓN
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+
+    if (!serviceRoleKey || !supabaseUrl) {
+        console.error("Faltan variables de entorno en el backend.");
+        throw new Error('Error de configuración del servidor: SUPABASE_SERVICE_ROLE_KEY no está definida en Secrets.');
+    }
+
+    // Crear cliente Admin (Service Role) para saltarse las reglas de seguridad
+    const adminClient = createClient(supabaseUrl, serviceRoleKey);
     
-    // The handle_new_user trigger will take care of creating the tenant and profile.
-    // We just need to sign up the new user with the correct metadata.
-    const { data, error: signUpError } = await adminClient.auth.signUp({
+    // PASO 1: Crear el Tenant explícitamente primero
+    // Esto asegura que el ID del tenant exista antes de crear el usuario
+    const { data: tenantData, error: tenantError } = await adminClient
+        .from('tenants')
+        .insert({ name: companyName, status: 'active' })
+        .select()
+        .single();
+
+    if (tenantError) throw new Error(`Error creando empresa: ${tenantError.message}`);
+    const newTenantId = tenantData.id;
+
+    // PASO 2: Crear el Usuario en Auth
+    // Usamos admin.createUser para confirmar el email automáticamente y no depender de signups públicos
+    const { data: authData, error: signUpError } = await adminClient.auth.admin.createUser({
         email: adminEmail,
         password: adminPassword,
-        options: {
-            data: {
-                name: adminName,
-                company_name: companyName, // The trigger will use this to create a new tenant
-                role: 'admin', // The trigger will assign this role
-                avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(adminName)}`,
-            },
-            // Since this is an admin action, we can auto-confirm the user's email.
-            emailRedirectTo: `${Deno.env.get('SITE_URL')}/login`,
+        email_confirm: true, // Confirmamos automáticamente al admin
+        user_metadata: {
+            name: adminName,
+            tenant_id: newTenantId,
+            role: 'admin',
+            avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(adminName)}`,
         }
     });
 
     if (signUpError) {
-        // More specific error for duplicate emails
-        if (signUpError.message.includes('unique constraint')) {
-            throw new Error(`A user with the email ${adminEmail} already exists.`);
-        }
-        throw signUpError;
+        // ROLLBACK: Si falla crear el usuario, borramos el tenant creado en el paso 1
+        console.error("Error creando usuario, revirtiendo tenant...", signUpError);
+        await adminClient.from('tenants').delete().eq('id', newTenantId);
+        throw new Error(`Error creando usuario (posiblemente email duplicado): ${signUpError.message}`);
     }
-    
-    if (!data.user) {
-        throw new Error('User was not created, but no error was thrown.');
-    }
-    
-    // The trigger `handle_new_user` should have already created the tenant and profile.
-    // Let's verify by fetching the new user's profile to get the tenant_id.
-    const { data: profileData, error: profileError } = await adminClient
+
+    const newUserId = authData.user.id;
+
+    // PASO 3: Crear/Enlazar el Perfil explícitamente
+    // Aunque haya un trigger, usamos UPSERT para asegurar que los datos sean correctos
+    const { error: profileError } = await adminClient
         .from('profiles')
-        .select('tenant_id')
-        .eq('id', data.user.id)
-        .single();
-        
-    if (profileError || !profileData?.tenant_id) {
-        // Rollback: delete the user if profile/tenant creation failed
-        await adminClient.auth.admin.deleteUser(data.user.id);
-        throw new Error('Failed to create associated tenant/profile for the new user. Operation rolled back.');
+        .upsert({
+            id: newUserId,
+            tenant_id: newTenantId,
+            email: adminEmail,
+            name: adminName,
+            role: 'admin',
+            avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(adminName)}`
+        });
+
+    if (profileError) {
+        // ROLLBACK CRÍTICO: Si falla el perfil, borramos usuario y tenant
+        console.error("Error creando perfil, revirtiendo todo...", profileError);
+        await adminClient.auth.admin.deleteUser(newUserId);
+        await adminClient.from('tenants').delete().eq('id', newTenantId);
+        throw new Error(`Error creando perfil: ${profileError.message}`);
     }
 
-
-    return new Response(JSON.stringify({ success: true, userId: data.user.id, tenantId: profileData.tenant_id }), {
+    return new Response(JSON.stringify({ 
+        success: true, 
+        userId: newUserId, 
+        tenantId: newTenantId,
+        message: "Tenant y Administrador creados correctamente."
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
     });
 
-  } catch (error) {
+  } catch (error: any) {
+    console.error("Create Tenant Error:", error);
     return new Response(JSON.stringify({ error: error.message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 400,

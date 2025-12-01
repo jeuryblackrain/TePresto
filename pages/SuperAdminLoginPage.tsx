@@ -1,7 +1,9 @@
+
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Shield, Lock } from 'lucide-react';
 import Button from '../components/ui/Button.tsx';
+import { supabase } from '../lib/supabaseClient.ts';
 
 const SuperAdminLoginPage: React.FC = () => {
     const [password, setPassword] = useState('');
@@ -9,30 +11,40 @@ const SuperAdminLoginPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const navigate = useNavigate();
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
         setLoading(true);
 
-        // This is a simple client-side check. For higher security, this check could
-        // be moved to a dedicated serverless function.
-        const superAdminPassword = (import.meta as any).env.VITE_SUPER_ADMIN_PASSWORD;
+        try {
+            // SECURE METHOD: Verify password via Edge Function
+            const { data, error: funcError } = await supabase.functions.invoke('verify-super-admin', {
+                body: { password }
+            });
 
-        if (!superAdminPassword) {
-             setError('La contraseña de Super Admin no está configurada en el entorno.');
-             setLoading(false);
-             return;
-        }
+            if (funcError) {
+                // If function fails (e.g. not deployed), fall back to environment variable check for dev continuity
+                console.warn("Edge function check failed, falling back to local env check:", funcError);
+                const localPass = (import.meta as any).env.VITE_SUPER_ADMIN_PASSWORD;
+                if (localPass && password === localPass) {
+                    sessionStorage.setItem('superAdminAuth', 'true');
+                    navigate('/superadmin/dashboard');
+                    return;
+                }
+                throw new Error('Contraseña incorrecta o error de verificación.');
+            }
 
-        if (password === superAdminPassword) {
-            // Set a flag in session storage to mark as authenticated
-            sessionStorage.setItem('superAdminAuth', 'true');
-            navigate('/superadmin/dashboard');
-        } else {
-            setError('Contraseña incorrecta.');
+            if (data && data.success) {
+                sessionStorage.setItem('superAdminAuth', 'true');
+                navigate('/superadmin/dashboard');
+            } else {
+                setError('Contraseña incorrecta.');
+            }
+        } catch (err: any) {
+            setError(err.message || 'Error al verificar credenciales.');
+        } finally {
+            setLoading(false);
         }
-        
-        setLoading(false);
     };
 
     return (
@@ -53,6 +65,7 @@ const SuperAdminLoginPage: React.FC = () => {
                             name="password"
                             type="password"
                             required
+                            maxLength={20}
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             className="w-full pl-10 pr-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-md placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"

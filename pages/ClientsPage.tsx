@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient.ts';
 import { Client } from '../types.ts';
@@ -9,70 +10,62 @@ import Modal from '../components/ui/Modal.tsx';
 import ClientForm from '../components/forms/ClientForm.tsx';
 import { useToast } from '../hooks/useToast.ts';
 import useAuth from '../hooks/useAuth.ts';
+import Pagination from '../components/ui/Pagination.tsx';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+
+const ITEMS_PER_PAGE = 20;
 
 const ClientsPage: React.FC = () => {
-    const { profile } = useAuth();
-    const [clients, setClients] = useState<Client[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const { profile, isReadOnly } = useAuth();
+    const { addToast } = useToast();
+    const queryClient = useQueryClient();
+
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedClient, setSelectedClient] = useState<Client | null>(null);
-    const [isSaving, setIsSaving] = useState(false);
-    const { addToast } = useToast();
     const [searchTerm, setSearchTerm] = useState('');
+    const [page, setPage] = useState(1);
 
-    const fetchClients = useCallback(async () => {
-        if (!profile) return;
-        setLoading(true);
-        setError(null);
-        try {
+    // Fetch Clients
+    const { data, isLoading, error } = useQuery({
+        queryKey: ['clients', profile?.tenant_id, page, searchTerm],
+        queryFn: async () => {
+            if (!profile) return { data: [], count: 0 };
+            
             let query = supabase
                 .from('clients')
-                .select('*')
+                .select('*', { count: 'exact' })
                 .eq('tenant_id', profile.tenant_id)
                 .order('name', { ascending: true });
 
             if (searchTerm) {
                 const searchIlke = `%${searchTerm.replace(/ /g, '%')}%`;
-                // Search in name, phone, or ID document
-                // FIX: Corrected typo from searchIlike to searchIlke
                 query = query.or(`name.ilike.${searchIlke},phone.ilike.${searchIlke},id_document.ilike.${searchIlke}`);
             }
 
-            const { data, error } = await query;
+            const from = (page - 1) * ITEMS_PER_PAGE;
+            const to = from + ITEMS_PER_PAGE - 1;
+            query = query.range(from, to);
+
+            const { data, error, count } = await query;
             if (error) throw error;
-            setClients(data || []);
-        } catch (err: any) {
-            setError(err.message || "Failed to fetch clients.");
-        } finally {
-            setLoading(false);
-        }
-    }, [searchTerm, profile]);
-    
-    useEffect(() => {
-        const debounceTimer = setTimeout(() => {
-            fetchClients();
-        }, 300); // Debounce search to avoid excessive API calls
+            return { data: data as Client[], count: count || 0 };
+        },
+        enabled: !!profile,
+        placeholderData: (previousData) => previousData,
+    });
 
-        return () => clearTimeout(debounceTimer);
-    }, [fetchClients]);
-    
-    const handleOpenModal = (client: Client | null = null) => {
-        setSelectedClient(client);
-        setIsModalOpen(true);
-    };
+    const clients = data?.data || [];
+    const totalCount = data?.count || 0;
 
-    const handleCloseModal = () => {
-        setIsModalOpen(false);
-        setSelectedClient(null);
-    };
+    // Reset page on search
+    React.useEffect(() => {
+        setPage(1);
+    }, [searchTerm]);
 
-    const handleSaveClient = async (clientData: Partial<Client>) => {
-        if (!profile) return;
-        setIsSaving(true);
-        try {
-            // The tenant_id is now set by the database default.
-            const dataToSave = {
+    // Mutation for create/update
+    const saveClientMutation = useMutation({
+        mutationFn: async (clientData: Partial<Client>) => {
+             const dataToSave = {
                 name: clientData.name,
                 phone: clientData.phone,
                 address: clientData.address,
@@ -86,28 +79,49 @@ const ClientsPage: React.FC = () => {
                     .update(dataToSave)
                     .eq('id', selectedClient.id);
                 if (error) throw error;
-                addToast('Cliente actualizado correctamente', 'success');
             } else { // Insert
                 const { error } = await supabase
                     .from('clients')
                     .insert(dataToSave);
                 if (error) throw error;
-                addToast('Cliente creado correctamente', 'success');
             }
-            handleCloseModal();
-            fetchClients();
-        } catch (err: any) {
+        },
+        onSuccess: () => {
+            addToast(selectedClient ? 'Cliente actualizado' : 'Cliente creado', 'success');
+            setIsModalOpen(false);
+            setSelectedClient(null);
+            queryClient.invalidateQueries({ queryKey: ['clients'] });
+            queryClient.invalidateQueries({ queryKey: ['dashboardStats'] });
+        },
+        onError: (err: any) => {
             addToast(`Error: ${err.message}`, 'error');
-        } finally {
-            setIsSaving(false);
         }
+    });
+
+    const handleOpenModal = (client: Client | null = null) => {
+        setSelectedClient(client);
+        setIsModalOpen(true);
+    };
+
+    const handleCloseModal = () => {
+        setIsModalOpen(false);
+        setSelectedClient(null);
+    };
+
+    const handleSaveClient = (clientData: Partial<Client>) => {
+        saveClientMutation.mutate(clientData);
     };
 
     return (
         <>
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                 <h1 className="text-3xl font-bold text-gray-800 dark:text-white">Clientes</h1>
-                <Button onClick={() => handleOpenModal()} leftIcon={PlusCircle}>
+                <Button 
+                    onClick={() => handleOpenModal()} 
+                    leftIcon={PlusCircle}
+                    disabled={isReadOnly}
+                    title={isReadOnly ? "Modo solo lectura activo" : "Crear nuevo cliente"}
+                >
                     Nuevo Cliente
                 </Button>
             </div>
@@ -120,13 +134,14 @@ const ClientsPage: React.FC = () => {
                             placeholder="Buscar por nombre, teléfono o cédula..."
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
+                            maxLength={100}
                             className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
                         />
                     </div>
                 </div>
-                {loading && <p className="p-4 text-center">Cargando...</p>}
-                {error && <p className="p-4 text-center text-red-500">{error}</p>}
-                {!loading && !error && (
+                {isLoading && <p className="p-4 text-center dark:text-gray-300">Cargando...</p>}
+                {error && <p className="p-4 text-center text-red-500">Error: {(error as Error).message}</p>}
+                {!isLoading && !error && (
                      <div className="overflow-x-auto">
                         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                             <thead className="bg-gray-50 dark:bg-gray-800">
@@ -139,7 +154,7 @@ const ClientsPage: React.FC = () => {
                             </thead>
                             <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
                                 {clients.length === 0 ? (
-                                    <tr><td colSpan={4} className="text-center py-4">No se encontraron clientes.</td></tr>
+                                    <tr><td colSpan={4} className="text-center py-4 dark:text-gray-300">No se encontraron clientes.</td></tr>
                                 ) : (
                                     clients.map(client => (
                                         <tr key={client.id}>
@@ -147,7 +162,12 @@ const ClientsPage: React.FC = () => {
                                             <td className="px-6 py-4 whitespace-nowrap text-gray-600 dark:text-gray-400">{client.phone}</td>
                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{client.address}</td>
                                             <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
-                                                <Button size="sm" variant="secondary" onClick={() => handleOpenModal(client)}>
+                                                <Button 
+                                                    size="sm" 
+                                                    variant="secondary" 
+                                                    onClick={() => handleOpenModal(client)}
+                                                    disabled={isReadOnly}
+                                                >
                                                     Editar
                                                 </Button>
                                                 <Link to={`/clients/${client.id}`} className="text-primary-600 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-200 inline-block align-middle">
@@ -159,6 +179,12 @@ const ClientsPage: React.FC = () => {
                                 )}
                             </tbody>
                         </table>
+                        <Pagination 
+                            currentPage={page} 
+                            totalCount={totalCount} 
+                            pageSize={ITEMS_PER_PAGE} 
+                            onPageChange={setPage} 
+                        />
                     </div>
                 )}
             </Card>
@@ -167,7 +193,7 @@ const ClientsPage: React.FC = () => {
                     client={selectedClient}
                     onSave={handleSaveClient}
                     onClose={handleCloseModal}
-                    isSaving={isSaving}
+                    isSaving={saveClientMutation.isPending}
                 />
             </Modal>
         </>

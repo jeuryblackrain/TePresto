@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from 'react';
+
+import React from 'react';
 import { supabase } from '../lib/supabaseClient.ts';
 import { HandCoins, Users, AlertTriangle, CheckCircle } from 'lucide-react';
 import Card from '../components/ui/Card.tsx';
 import { Loan, LoanStatus, Payment } from '../types.ts';
 import { formatCurrency, formatDate } from '../utils/formatters.ts';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, Legend as RechartsLegend } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend as RechartsLegend } from 'recharts';
 import useAuth from '../hooks/useAuth.ts';
-
+import { useQuery } from '@tanstack/react-query';
 
 interface DashboardStats {
     totalLoans: number;
@@ -25,104 +26,89 @@ const COLORS = {
 
 const DashboardPage: React.FC = () => {
     const { profile } = useAuth();
-    const [stats, setStats] = useState<DashboardStats | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [loanStatusData, setLoanStatusData] = useState<any[]>([]);
-    const [weeklyPaymentsData, setWeeklyPaymentsData] = useState<any[]>([]);
 
-    useEffect(() => {
-        const fetchDashboardData = async () => {
-            if (!profile) return;
-            setLoading(true);
-            setError(null);
-            try {
-                const sevenDaysAgo = new Date();
-                sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-                const dateString = sevenDaysAgo.toISOString().split('T')[0];
+    const fetchDashboardData = async () => {
+        if (!profile) throw new Error("No profile");
+        
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        const dateString = sevenDaysAgo.toISOString().split('T')[0];
 
-                // Fetch loans, clients, and payments in parallel for better performance
-                const [loansResult, clientsResult, paymentsResult] = await Promise.all([
-                    supabase.from('loans').select('amount, status').eq('tenant_id', profile.tenant_id),
-                    supabase.from('clients').select('*', { count: 'exact', head: true }).eq('tenant_id', profile.tenant_id),
-                    supabase.from('payments').select('amount, payment_date').eq('tenant_id', profile.tenant_id).gte('payment_date', dateString)
-                ]);
+        // Fetch loans, clients, and payments in parallel
+        const [loansResult, clientsResult, paymentsResult] = await Promise.all([
+            supabase.from('loans').select('amount, status').eq('tenant_id', profile.tenant_id),
+            supabase.from('clients').select('*', { count: 'exact', head: true }).eq('tenant_id', profile.tenant_id),
+            supabase.from('payments').select('amount, payment_date').eq('tenant_id', profile.tenant_id).gte('payment_date', dateString)
+        ]);
 
-                // Destructure and check for errors
-                const { data: loans, error: loansError } = loansResult;
-                if (loansError) throw loansError;
-                const loanData = loans as Pick<Loan, 'amount' | 'status'>[];
+        if (loansResult.error) throw loansResult.error;
+        if (clientsResult.error) throw clientsResult.error;
+        if (paymentsResult.error) throw paymentsResult.error;
 
-                const { count: clientCount, error: clientsError } = clientsResult;
-                if (clientsError) throw clientsError;
+        const loans = loansResult.data as Pick<Loan, 'amount' | 'status'>[];
+        const payments = paymentsResult.data as Payment[];
+        const clientCount = clientsResult.count || 0;
 
-                const { data: payments, error: paymentsError } = paymentsResult;
-                if (paymentsError) throw paymentsError;
+        // Process stats
+        const totalLoanAmount = loans.reduce((acc, loan) => acc + Number(loan.amount), 0);
+        const activeLoans = loans.filter(l => l.status === LoanStatus.ACTIVO).length;
+        const overdueLoans = loans.filter(l => l.status === LoanStatus.ATRASADO).length;
+        const paidLoans = loans.filter(l => l.status === LoanStatus.PAGADO).length;
 
-                // Process stats
-                const totalLoanAmount = loanData.reduce((acc, loan) => acc + Number(loan.amount), 0);
-                const activeLoans = loanData.filter(l => l.status === LoanStatus.ACTIVO).length;
-                const overdueLoans = loanData.filter(l => l.status === LoanStatus.ATRASADO).length;
-                const paidLoans = loanData.filter(l => l.status === LoanStatus.PAGADO).length;
-
-                setStats({
-                    totalLoans: loanData.length,
-                    activeLoans,
-                    overdueLoans,
-                    paidLoans,
-                    totalLoanAmount,
-                    totalClients: clientCount ?? 0,
-                });
-
-                // Process data for charts
-                const statusCounts = loanData.reduce((acc, loan) => {
-                    acc[loan.status] = (acc[loan.status] || 0) + 1;
-                    return acc;
-                }, {} as Record<LoanStatus, number>);
-                
-                setLoanStatusData(Object.entries(statusCounts).map(([name, value]) => ({ name, value })));
-
-                const paymentsByDay = (payments as Payment[]).reduce((acc, payment) => {
-                    const date = formatDate(payment.payment_date);
-                    acc[date] = (acc[date] || 0) + payment.amount;
-                    return acc;
-                }, {} as Record<string, number>);
-
-                const last7Days: { date: string; Cobrado: number }[] = [];
-                for (let i = 6; i >= 0; i--) {
-                    const d = new Date();
-                    d.setDate(d.getDate() - i);
-                    const formattedDate = formatDate(d.toISOString().split('T')[0]);
-                    last7Days.push({
-                        date: formattedDate.substring(0, 5), // "dd/mm"
-                        Cobrado: paymentsByDay[formattedDate] || 0,
-                    });
-                }
-                setWeeklyPaymentsData(last7Days);
-
-
-            } catch (err: any) {
-                setError(err.message || "Failed to fetch dashboard data.");
-                console.error(err);
-            } finally {
-                setLoading(false);
-            }
+        const stats: DashboardStats = {
+            totalLoans: loans.length,
+            activeLoans,
+            overdueLoans,
+            paidLoans,
+            totalLoanAmount,
+            totalClients: clientCount,
         };
 
-        fetchDashboardData();
-    }, [profile]);
+        // Chart Data
+        const statusCounts = loans.reduce((acc, loan) => {
+            acc[loan.status] = (acc[loan.status] || 0) + 1;
+            return acc;
+        }, {} as Record<LoanStatus, number>);
+        
+        const loanStatusData = Object.entries(statusCounts).map(([name, value]) => ({ name, value }));
 
-    if (loading) {
-        return <div className="text-center p-8">Cargando datos del dashboard...</div>;
+        const paymentsByDay = payments.reduce((acc, payment) => {
+            const date = formatDate(payment.payment_date);
+            acc[date] = (acc[date] || 0) + payment.amount;
+            return acc;
+        }, {} as Record<string, number>);
+
+        const weeklyPaymentsData = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const formattedDate = formatDate(d.toISOString().split('T')[0]);
+            weeklyPaymentsData.push({
+                date: formattedDate.substring(0, 5), // "dd/mm"
+                Cobrado: paymentsByDay[formattedDate] || 0,
+            });
+        }
+
+        return { stats, loanStatusData, weeklyPaymentsData };
+    };
+
+    const { data, isLoading, error } = useQuery({
+        queryKey: ['dashboardStats', profile?.tenant_id],
+        queryFn: fetchDashboardData,
+        enabled: !!profile,
+    });
+
+    if (isLoading) {
+        return <div className="text-center p-8 dark:text-gray-300">Cargando datos del dashboard...</div>;
     }
 
     if (error) {
-        return <div className="text-center p-8 text-red-500">Error: {error}</div>;
+        return <div className="text-center p-8 text-red-500">Error: {(error as Error).message}</div>;
     }
 
-    if (!stats) {
-        return <div className="text-center p-8">No se encontraron datos.</div>;
-    }
+    if (!data) return null;
+
+    const { stats, loanStatusData, weeklyPaymentsData } = data;
 
     return (
         <div>
@@ -202,7 +188,6 @@ const DashboardPage: React.FC = () => {
                                         outerRadius={80}
                                         fill="#8884d8"
                                         dataKey="value"
-                                        // FIX: Cast `percent` to Number to avoid TypeScript arithmetic error.
                                         label={({ name, percent }) => `${name} ${(Number(percent) * 100).toFixed(0)}%`}
                                     >
                                         {loanStatusData.map((entry, index) => (
